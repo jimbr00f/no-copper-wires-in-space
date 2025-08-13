@@ -1,0 +1,94 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.2.8
+Date: 2024.11.23
+  Bugfixes:
+    - Blind fix for crash with missing pole widths
+    - Planner item is hidden from item/signal picker
+---------------------------------------------------------------------------------------------------
+Version: 0.2.7
+Date: 2024.11.10
+  Locale:
+    - "Grid enforcer" -> "Electric grid enforcer" in keybinds and shortcuts
+---------------------------------------------------------------------------------------------------
+Version: 0.2.6
+Date: 2024.11.03
+  Features:
+    - Setting to skip tidying neighbours on pole removal
+---------------------------------------------------------------------------------------------------
+Version: 0.2.5
+Date: 2024.11.01
+  Changes:
+    - Better selection tool icon
+  Bugfixes:
+    - Fixed typo in selection tool description
+---------------------------------------------------------------------------------------------------
+Version: 0.2.4
+Date: 2024.11.01
+  Features:
+    - Optional planner/selection tool for manually cleaning areas
+---------------------------------------------------------------------------------------------------
+Version: 0.2.3
+Date: 2024.10.15
+  Features:
+    - 2.0 compatibility
+---------------------------------------------------------------------------------------------------
+Version: 0.2.2
+Date: 2024.09.29
+  Features:
+    - Better logic around poles wider than 1 tile
+---------------------------------------------------------------------------------------------------
+Version: 0.2.1
+Date: 2024.09.21
+  Features:
+    - 1.2.23 compatibility
+---------------------------------------------------------------------------------------------------
+Version: 0.2.0
+Date: 2024.09.18
+  Features:
+    - 1.2 compatibility
+---------------------------------------------------------------------------------------------------
+Version: 0.1.0
+Date: 2024.05.31
+  Bugfixes:
+    - Fix grid sometimes missing connections when poles have overlapping ranges
+---------------------------------------------------------------------------------------------------
+Version: 0.0.8
+Date: 2022.05.20
+  Bugfixes:
+    - Fix crash with non-pole entities connected by copper cables, again
+---------------------------------------------------------------------------------------------------
+Version: 0.0.7
+Date: 2022.04.17
+  Changes:
+    - Add a tolerance to allow situations like connecting a large and medium pole
+---------------------------------------------------------------------------------------------------
+Version: 0.0.6
+Date: 2022.04.17
+  Bugfixes:
+    - Add desync guards
+---------------------------------------------------------------------------------------------------
+Version: 0.0.5
+Date: 2022.04.16
+  Features:
+    - Shortcut bar entry, toggles per force
+    - Probably more bugs
+---------------------------------------------------------------------------------------------------
+Version: 0.0.4
+Date: 2022.04.16
+  Bugfixes:
+    - Fix crash with non-pole entities connected by copper cables
+---------------------------------------------------------------------------------------------------
+Version: 0.0.3
+Date: 2022.02.01
+  Bugfixes:
+    - Fix crash with calling neighbours on invalid poles
+---------------------------------------------------------------------------------------------------
+Version: 0.0.2
+Date: 2022.01.28
+  Bugfixes:
+    - Fix crash with calling neighbours on ghosts
+---------------------------------------------------------------------------------------------------
+Version: 0.0.1
+Date: 2021.11.12
+  Info:
+    - Portal release
