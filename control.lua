@@ -1,5 +1,11 @@
 local ID_COPPER = defines.wire_connector_id.pole_copper
 
+---@class QueueItem
+---@field entity LuaEntity
+---@field bypass_toggle boolean
+---@field alt_mode boolean
+---@field direction defines.direction?
+
 storage.enforcer = {}
 
 storage.enforcer.wire_lengths = {
@@ -66,50 +72,54 @@ local function distance_sort(tbl, origin)
   end)
 end
 
+---@return defines.direction?
 local function direction_of(origin, pos, widthA, widthB)
   local width = widthA ~= widthB and math.max(widthA or 0.5, widthB or 0.5) or 1
   local h_distance = math.abs(origin.x - pos.x)
   local v_distance = math.abs(origin.y - pos.y)
   if h_distance == 0 and v_distance == 0 then -- Both axes same
-    return "!"
-  elseif h_distance < width and h_distance <= v_distance then -- Y axis different, <= prefs n/s connections over e/w
-    return origin.y > pos.y and "N" or "S"
+    return nil
+  elseif h_distance < width and h_distance < v_distance then -- Y axis different, <= prefs n/s connections over e/w
+    return origin.y > pos.y and defines.direction.north or defines.direction.south
   elseif v_distance < width and v_distance < h_distance then -- X axis different
-    return origin.x > pos.x and "W" or "E"
-  else -- Neither axis same
-    return "!"
+    return origin.x > pos.x and defines.direction.west or defines.direction.east
   end
+  return nil
 end
 
--- N: -y
--- E: +x
--- S: +y
--- W: -x
+---@class DirectionalSearchParams
+---@field axis defines.direction
+---@field key integer
+---@field multiplier number
 local directions = {
   -- which part of area to modify, which subkey, what multiplier
-  N = {
-    axis = "left_top",
+  [defines.direction.north] = {
+    axis = defines.direction.northwest,
     key = 2,
     multiplier = -1
   },
-  E = {
-    axis = "right_bottom",
+  [defines.direction.east] = {
+    axis = defines.direction.southeast,
     key = 1,
     multiplier = 1
   },
-  S = {
-    axis = "right_bottom",
+  [defines.direction.south] = {
+    axis = defines.direction.southeast,
     key = 2,
     multiplier = 1
   },
-  W = {
-    axis = "left_top",
+  [defines.direction.west] = {
+    axis = defines.direction.northwest,
     key = 1,
     multiplier = -1
   }
 }
 
-local function clean_pole(pole, search_direction, bypass_toggle, sloppy)
+---@param pole LuaEntity
+---@param search_direction? defines.direction
+---@param bypass_toggle? boolean
+---@param alt_mode? boolean
+local function clean_pole(pole, search_direction, bypass_toggle, alt_mode)
   -- wtf factorio
   if pole.type ~= "electric-pole" then
     return
@@ -119,9 +129,10 @@ local function clean_pole(pole, search_direction, bypass_toggle, sloppy)
   local lengths = storage.enforcer.wire_lengths
   local length = lengths[pole.name][pole.quality.name]
   local widths = storage.enforcer.pole_widths
-  local width = sloppy and length or widths[pole.name]
+  local width = alt_mode and length or widths[pole.name]
   local loyalty = pole.force.name
   local connector = pole.get_wire_connector(ID_COPPER, true)
+  local is_space = pole.surface_index == game.surfaces["space-platform"].index
 
   if loyalty and storage.enforcer.disabled_forces[loyalty] and not bypass_toggle then
     return
@@ -137,7 +148,10 @@ local function clean_pole(pole, search_direction, bypass_toggle, sloppy)
   -- No boyband :(
   search_queue = search_queue or directions
   -- Kill connections in our search direction(s)
-  if search_direction then
+  if is_space or not search_direction then
+    connector.disconnect_all()
+    return
+  else
     for _, connection in pairs(connector.real_connections) do
       local neighbour_connector = connection.target
       local neighbour = neighbour_connector.owner
@@ -146,8 +160,6 @@ local function clean_pole(pole, search_direction, bypass_toggle, sloppy)
         connector.disconnect_from(neighbour_connector)
       end
     end
-  else -- loop here instead of disconnect_all to avoid breaking switches
-    connector.disconnect_all()
   end
 
   -- Begin search
@@ -155,11 +167,11 @@ local function clean_pole(pole, search_direction, bypass_toggle, sloppy)
     -- Build our search filter -- area and type filter
     local search_filter = {
       area = {
-        left_top = {
+        [defines.direction.northwest] = {
           origin.x - width,
           origin.y - width
         },
-        right_bottom = {
+        [defines.direction.southeast] = {
           origin.x + width,
           origin.y + width
         }
@@ -190,11 +202,11 @@ local function clean_pole(pole, search_direction, bypass_toggle, sloppy)
     local friend_connector = friend_connection.target
     local friend = friend_connector.owner
     if --[[friend.valid and]] friend.type == "electric-pole" then
-      local friend_width = sloppy and lengths[friend.name][friend.quality.name] or widths[friend.name]
+      local friend_width = alt_mode and lengths[friend.name][friend.quality.name] or widths[friend.name]
       local friend_pos = friend.position
       -- Kill diagonal connections
       local friend_direction = direction_of(origin, friend_pos, width, friend_width)
-      if friend_direction == "!" then
+      if not friend_direction then
         connector.disconnect_from(friend_connector)
       end
       -- Since we're iterating anyway, let's cache the connectors
@@ -212,14 +224,14 @@ local function clean_pole(pole, search_direction, bypass_toggle, sloppy)
       distance_sort(sorted_neighbours, friend_pos)
       -- kill any but the closest in each direction
       local found_friends = {
-        N = false,
-        E = false,
-        S = false,
-        W = false
+        [defines.direction.north] = false,
+        [defines.direction.east] = false,
+        [defines.direction.south] = false,
+        [defines.direction.west] = false
       }
       for _, friend_of_friend in pairs(sorted_neighbours) do
           local fof_direction = direction_of(friend_pos, friend_of_friend.position, friend_width, widths[friend_of_friend.name])
-          if fof_direction == "!" or found_friends[fof_direction] then
+          if not fof_direction or found_friends[fof_direction] then
             friend_connector.disconnect_from(neighbour_connectors[friend_of_friend.unit_number])
           else -- This is our closest connection in the given direction
             found_friends[fof_direction] = friend_of_friend
@@ -234,12 +246,12 @@ script.on_nth_tick(3, function()
   local max_iter = 0
   local key, details = next(storage.enforcer.cleanup_queue)
   -- Empty table. We make this distinction because we want to replace the empty table with {} only when we modify it (instead of every tick)
-  if not key then
+  if not key or not details then
     return
   end
   repeat
     if details.entity.valid then
-      clean_pole(details.entity, details.direction, details.bypass_toggle, details.sloppy)
+      clean_pole(details.entity, details.direction, details.bypass_toggle, details.alt_mode)
       max_iter = max_iter + 1
     end
     storage.enforcer.cleanup_queue[key] = nil
@@ -252,15 +264,17 @@ script.on_nth_tick(3, function()
   until max_iter > queue_size
 end)
 
+
+---@param event EventData.on_built_entity | EventData.on_robot_built_entity | EventData.script_raised_built | EventData.script_raised_revive | EventData.on_entity_cloned | EventData.on_player_mined_entity | EventData.on_robot_mined_entity | EventData.on_entity_died | EventData.script_raised_destroy
 local function handle_pole_event(event)
   local is_creation = events.creation[event.name]
   -- Different events use different names for.. reasons?
-  local source_pole = event.created_entity or event.entity or event.destination
+  local source_pole = event.entity or event.destination
   -- New pole
   if is_creation then
     clean_pole(source_pole)
   elseif not settings.global["grid-enforcer-no-clean-on-remove"].value then -- Handling reconnection logic on pole removal
-    local connector = source_pole.get_wire_connector(ID_COPPER)
+    local connector = source_pole.get_wire_connector(ID_COPPER, false)
     if not connector then
       return
     end
@@ -268,7 +282,7 @@ local function handle_pole_event(event)
     for _, friend_connector in pairs(connector.real_connections) do
       local friend = friend_connector.target.owner
       local friend_direction = direction_of(friend.position, source_pole.position, widths[friend.name], widths[friend.name])
-      if friend_direction ~= "!" and friend.type == "electric-pole" then
+      if friend_direction and friend.type == "electric-pole" then
         storage.enforcer.cleanup_queue[friend.unit_number] = {
           entity = friend,
           direction = friend_direction
@@ -278,6 +292,7 @@ local function handle_pole_event(event)
   end
 end
 
+---@param event EventData.on_player_selected_area | EventData.on_player_alt_selected_area
 local function handle_selection_event(event)
   if event.item ~= "invoke-grid-enforcer" then
     return
@@ -287,7 +302,7 @@ local function handle_selection_event(event)
     storage.enforcer.cleanup_queue[ent.unit_number] = {
       entity = ent,
       bypass_toggle = true,
-      sloppy = alt_mode
+      alt_mode = alt_mode
     }
   end
 end
