@@ -37,6 +37,7 @@ local events = {
   creation = {
     on_built_entity = true,
     on_robot_built_entity = true,
+    on_space_platform_built_entity = true,
     script_raised_built = true,
     script_raised_revive = true,
     on_entity_cloned = true
@@ -44,6 +45,7 @@ local events = {
   destruction = {
     on_player_mined_entity = true,
     on_robot_mined_entity = true,
+    on_space_platform_mined_entity = true,
     on_entity_died = true,
     script_raised_destroy = true
   },
@@ -132,13 +134,15 @@ local function clean_pole(pole, search_direction, bypass_toggle, alt_mode)
   local width = alt_mode and length or widths[pole.name]
   local loyalty = pole.force.name
   local connector = pole.get_wire_connector(ID_COPPER, true)
-  local is_space = pole.surface_index == game.surfaces["space-platform"].index
+  local is_space = game.surfaces[pole.surface_index].platform ~= nil
 
   if loyalty and storage.enforcer.disabled_forces[loyalty] and not bypass_toggle then
+    game.print('built, but loyalty')
     return
   end
 
   if not connector then
+    game.print('built, but no connector')
     log(string.format("pole %s has no connector?", pole))
     return
   end
@@ -149,9 +153,11 @@ local function clean_pole(pole, search_direction, bypass_toggle, alt_mode)
   search_queue = search_queue or directions
   -- Kill connections in our search direction(s)
   if is_space or not search_direction then
+    game.print('is space, disconnect all')
     connector.disconnect_all()
     return
   else
+    game.print('not space, disconnect specific')
     for _, connection in pairs(connector.real_connections) do
       local neighbour_connector = connection.target
       local neighbour = neighbour_connector.owner
@@ -185,6 +191,7 @@ local function clean_pole(pole, search_direction, bypass_toggle, alt_mode)
     -- Do our "line" search and sort the result by distance
     local results = pole.surface.find_entities_filtered(search_filter)
     distance_sort(results, origin)
+    game.print('connecting sorted results, n=: ' .. tostring(#results))
     -- Move in the target direction until we get a successful connection
     for _, target in pairs(results) do
       if pole ~= target then
@@ -206,7 +213,7 @@ local function clean_pole(pole, search_direction, bypass_toggle, alt_mode)
       local friend_pos = friend.position
       -- Kill diagonal connections
       local friend_direction = direction_of(origin, friend_pos, width, friend_width)
-      if not friend_direction then
+      if is_space or not friend_direction then
         connector.disconnect_from(friend_connector)
       end
       -- Since we're iterating anyway, let's cache the connectors
@@ -231,7 +238,7 @@ local function clean_pole(pole, search_direction, bypass_toggle, alt_mode)
       }
       for _, friend_of_friend in pairs(sorted_neighbours) do
           local fof_direction = direction_of(friend_pos, friend_of_friend.position, friend_width, widths[friend_of_friend.name])
-          if not fof_direction or found_friends[fof_direction] then
+          if is_space or not fof_direction or found_friends[fof_direction] then
             friend_connector.disconnect_from(neighbour_connectors[friend_of_friend.unit_number])
           else -- This is our closest connection in the given direction
             found_friends[fof_direction] = friend_of_friend
@@ -265,7 +272,18 @@ script.on_nth_tick(3, function()
 end)
 
 
----@param event EventData.on_built_entity | EventData.on_robot_built_entity | EventData.script_raised_built | EventData.script_raised_revive | EventData.on_entity_cloned | EventData.on_player_mined_entity | EventData.on_robot_mined_entity | EventData.on_entity_died | EventData.script_raised_destroy
+---@param event
+---| EventData.on_built_entity
+---| EventData.on_robot_built_entity
+---| EventData.on_space_platform_built_entity
+---| EventData.script_raised_built
+---| EventData.script_raised_revive
+---| EventData.on_entity_cloned
+---| EventData.on_player_mined_entity
+---| EventData.on_robot_mined_entity
+---| EventData.on_space_platform_mined_entity
+---| EventData.on_entity_died
+---| EventData.script_raised_destroy
 local function handle_pole_event(event)
   local is_creation = events.creation[event.name]
   -- Different events use different names for.. reasons?
