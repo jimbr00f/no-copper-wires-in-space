@@ -138,10 +138,8 @@ local default_search_queue = {
 ---@return boolean
 local function should_disconnect_for_space(pole)
     local space_setting = settings.global['grid-enforcer-no-copper-wires-in-space'].value
-    game.print('space_setting: ' .. tostring(space_setting))
     if not space_setting then return false end
     local is_space = pole.surface.platform ~= nil
-    game.print('is_space: ' .. tostring(is_space))
     return is_space
 end
 
@@ -168,7 +166,6 @@ end
 ---@param params CleanupParams
 ---@param search_queue SearchQueue
 local function reconnect_closest_neighbors(params, search_queue)
-    game.print('reconnecting closest; origin: (' .. tostring(params.origin.x) .. ',' .. tostring(params.origin.y) .. '), width: ' .. tostring(params.width) .. ', force: ' .. params.pole.force.name)
   -- Begin search
   for trace_direction, area_modifier in pairs(search_queue) do
     -- Build our search filter -- area and type filter
@@ -193,11 +190,9 @@ local function reconnect_closest_neighbors(params, search_queue)
     local results = params.pole.surface.find_entities_filtered(search_filter)
     distance_sort(results, params.origin)
     -- Move in the target direction until we get a successful connection
-    game.print('trace_dir:' .. tostring(trace_direction) .. ', p length: ' .. tostring(params.length) .. ', result count:' .. tostring(#results))
     for _, target in pairs(results) do
       if params.pole ~= target then
         if trace_direction == direction_of(params.origin, target.position, params.width, storage.enforcer.pole_widths[target.name]) then
-            game.print('reconnecting to ' .. tostring(target.unit_number))  
           if params.connector.connect_to(target.get_wire_connector(ID_COPPER, true)) then
             break
           end
@@ -305,7 +300,6 @@ local function cleanup_pole(pole, search_direction, is_selection, alt_mode)
   if pole.type ~= "electric-pole" then
     return
   end
-  game.print('called cleanup_pole{ un:' .. tostring(pole.unit_number) .. ', dir:' .. tostring(search_direction) .. ', is_select:' .. tostring(is_selection) .. ', alt:' .. tostring(alt_mode) .. '}')
   
   if not alt_mode then alt_mode = false end
 
@@ -321,23 +315,18 @@ local function cleanup_pole(pole, search_direction, is_selection, alt_mode)
 
   local disconnect_space = should_disconnect_for_space(pole)
   if disconnect_space or not search_direction then
-    game.print('disconnecting all')
     params.connector.disconnect_all()
   else
-    game.print('disconnecting search neighbors')
     disconnect_search_neighbors(params)
   end
   if disconnect_space then
-    game.print('returning bc disconnect_space')
     return
   end
     ---@type SearchQueue
   local search_queue = default_search_queue
   if search_direction then search_queue = {[search_direction] = default_search_queue[search_direction]} end
-  game.print('reconnecting closest')
   reconnect_closest_neighbors(params, search_queue)
-  game.print('cleanup obsolete')
---   cleanup_obsolete_connections(params)
+  cleanup_obsolete_connections(params)
 end
 
 local queue_size = 3
@@ -414,14 +403,8 @@ local proto = protos[name]
       (math.abs(selection_box.left_top.y) + math.abs(selection_box.right_bottom.y)) / 2
     ) + 0.05
     storage.enforcer.wire_lengths[name] = {}
-      game.print('calc width for ' .. tostring(name) .. ' => ' .. tostring(calc))
-      game.print('LT x,y width for ' .. tostring(name) .. ' => ' .. tostring(selection_box.left_top.x) .. ', ' .. tostring(selection_box.left_top.y))
-      game.print('RB x,y width for ' .. tostring(name) .. ' => ' .. tostring(selection_box.right_bottom.x) .. ', ' .. tostring(selection_box.right_bottom.y))
     for quality_name in pairs(prototypes.quality) do
-
       storage.enforcer.wire_lengths[name][quality_name] = proto.get_max_wire_distance(quality_name)
-      game.print('width for ' .. tostring(name) .. ':' .. tostring(quality_name) .. ' => ' .. tostring(storage.enforcer.pole_widths[name]))
-      game.print('length for ' .. tostring(name) .. ':' .. tostring(quality_name) .. ' => ' .. tostring(storage.enforcer.wire_lengths[name][quality_name]))
     end
 --   end
 end
