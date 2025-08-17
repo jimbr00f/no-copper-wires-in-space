@@ -1,7 +1,8 @@
+local common = require 'common'
 require '@types/entity'
 
 local ID_COPPER = defines.wire_connector_id.pole_copper
-local DEFAULT_POLE_EVENT_FILTER = {
+local DEFAULT_EVENT_FILTER = {
     {
         filter = "type",
         type = "electric-pole"
@@ -36,31 +37,30 @@ local DEFAULT_SEARCH_QUEUE = {
 -- These are (most) ways a pole can be created or removed
 local EVENT_HANDLER_MAPPING = {
     creation = {
-        on_built_entity = true,
-        on_robot_built_entity = true,
-        on_space_platform_built_entity = true,
-        script_raised_built = true,
-        script_raised_revive = true,
-        on_entity_cloned = true
+        defines.events.on_built_entity,
+        defines.events.on_robot_built_entity,
+        defines.events.on_space_platform_built_entity,
+        defines.events.script_raised_built,
+        defines.events.script_raised_revive,
+        defines.events.on_entity_cloned
     },
     destruction = {
-        on_player_mined_entity = true,
-        on_robot_mined_entity = true,
-        on_space_platform_mined_entity = true,
-        on_entity_died = true,
-        script_raised_destroy = true
+        defines.events.on_player_mined_entity,
+        defines.events.on_robot_mined_entity,
+        defines.events.on_space_platform_mined_entity,
+        defines.events.on_entity_died,
+        defines.events.script_raised_destroy
     },
     input = {
-        ["toggle-grid-enforcer"] = true,
-        on_lua_shortcut = true
+        common.ids.toggle_grid_enforcer,
+        defines.events.on_lua_shortcut
     },
     selection = {
-        on_player_selected_area = true,
-        on_player_alt_selected_area = true
+        defines.events.on_player_selected_area,
+        defines.events.on_player_alt_selected_area
     },
-    init = {
-        on_init = true,
-        on_configuration_changed = true
+    player_setup = {
+        defines.events.on_player_created
     }
 }
 
@@ -84,7 +84,7 @@ local function initialize_storage()
     storage.wire_lengths = storage.wire_lengths or {}
     ---@type PoleWidthMap
     storage.pole_widths = storage.pole_widths or {}
-    for name, proto in pairs(prototypes.get_entity_filtered(DEFAULT_POLE_EVENT_FILTER)) do
+    for name, proto in pairs(prototypes.get_entity_filtered(DEFAULT_EVENT_FILTER)) do
         ---@type PoleQualityWireLengthMap
         storage.wire_lengths[name] = {}
         for _, quality in pairs(prototypes.quality) do
@@ -379,22 +379,6 @@ local function handle_pole_event(event)
     end
 end
 
-function print_debugs()
-    --   for name, proto in pairs(prototypes.get_entity_filtered(DEFAULT_POLE_EVENT_FILTER)) do
-    local name = 'substation'
-    local protos = prototypes.get_entity_filtered(DEFAULT_POLE_EVENT_FILTER)
-    local proto = protos[name]
-    local selection_box = proto.selection_box
-    local calc = math.max(
-        (math.abs(selection_box.left_top.x) + math.abs(selection_box.right_bottom.x)) / 2,
-        (math.abs(selection_box.left_top.y) + math.abs(selection_box.right_bottom.y)) / 2
-    ) + 0.05
-    storage.wire_lengths[name] = {}
-    for quality_name in pairs(prototypes.quality) do
-        storage.wire_lengths[name][quality_name] = proto.get_max_wire_distance(quality_name)
-    end
-end
-
 ---@param event EventData.on_player_selected_area | EventData.on_player_alt_selected_area
 local function handle_selection_event(event)
     if event.item ~= "invoke-grid-enforcer" then
@@ -410,8 +394,17 @@ local function handle_selection_event(event)
     end
 end
 
+---@param event EventData
+---@return boolean
+local function is_input_event(event)
+    for _, event_id in pairs(EVENT_HANDLER_MAPPING.input) do
+        if event.name == event_id then return true end
+    end
+    return false
+end
+
 local function toggle_shortcut_for_force(event)
-    if not EVENT_HANDLER_MAPPING.input[event.prototype_name or event.input_name or ""] then
+    if not is_input_event(event) then
         return
     end
     local event_player = event.player_index and game.players[event.player_index]
@@ -423,34 +416,40 @@ local function toggle_shortcut_for_force(event)
     storage.disabled_forces[event_force.name] = not enabled
 end
 
-local function register_event(event_name, event_func, should_filter)
-    -- Strange but whatever
-    local event_id = defines.events[event_name] or event_name
-    script.on_event(event_id, event_func)
+---@param event_id LuaEventType ID of the event to filter.
+---@param event_handler fun(...)
+---@param should_filter? boolean
+local function register_event(event_id, event_handler, should_filter)
+    script.on_event(event_id, event_handler)
     if should_filter then
-        script.set_event_filter(event_id, DEFAULT_POLE_EVENT_FILTER)
+        script.set_event_filter(event_id, DEFAULT_EVENT_FILTER)
     end
 end
 
-for event_name, _ in pairs(EVENT_HANDLER_MAPPING.creation) do
-    -- Because we pass event_id.. sometimes
-    EVENT_HANDLER_MAPPING.creation[defines.events[event_name]] = true
-    register_event(event_name, handle_pole_event, true)
-end
-for event_name in pairs(EVENT_HANDLER_MAPPING.destruction) do
-    register_event(event_name, handle_pole_event, true)
-end
-for event_name in pairs(EVENT_HANDLER_MAPPING.input) do
-    register_event(event_name, toggle_shortcut_for_force)
-end
-for event_name in pairs(EVENT_HANDLER_MAPPING.selection) do
-    register_event(event_name, handle_selection_event)
-end
-for event_name in pairs(EVENT_HANDLER_MAPPING.init) do
-    script[event_name](initialize_storage)
+local function handle_player_setup(event)
+    local player = game.players[event.player_index]
+    player.set_shortcut_toggled(common.ids.toggle_grid_enforcer, not storage.disabled_forces[player.force.name])
 end
 
-register_event("on_player_created", function(event)
-    local player = game.players[event.player_index]
-    player.set_shortcut_toggled("toggle-grid-enforcer", not storage.disabled_forces[player.force.name])
-end)
+for _, event_id in pairs(EVENT_HANDLER_MAPPING.creation) do
+    -- Because we pass event_id.. sometimes
+    register_event(event_id, handle_pole_event, true)
+end
+for _, event_id in pairs(EVENT_HANDLER_MAPPING.destruction) do
+    register_event(event_id, handle_pole_event, true)
+end
+for _, event_id in pairs(EVENT_HANDLER_MAPPING.input) do
+    register_event(event_id, toggle_shortcut_for_force)
+end
+for _, event_id in pairs(EVENT_HANDLER_MAPPING.selection) do
+    register_event(event_id, handle_selection_event)
+end
+for _, event_id in pairs(EVENT_HANDLER_MAPPING.selection) do
+    register_event(event_id, handle_selection_event)
+end
+for _, event_id in pairs(EVENT_HANDLER_MAPPING.player_setup) do
+    register_event(event_id, handle_player_setup)
+end
+
+script.on_init(initialize_storage)
+script.on_configuration_changed(initialize_storage)

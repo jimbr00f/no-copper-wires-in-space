@@ -1,3 +1,4 @@
+local common = require 'common'
 local base_sprite = {
     icon = "__core__/graphics/icons/tooltips/tooltip-category-equipment-grid-electricity.png",
     icon_size = 40,
@@ -7,8 +8,8 @@ local base_sprite = {
 
 data:extend({
     {
-        name = "toggle-grid-enforcer",
-        associated_control_input = "toggle-grid-enforcer",
+        name = common.ids.toggle_grid_enforcer,
+        associated_control_input = common.ids.toggle_grid_enforcer,
         type = "shortcut",
         action = "lua",
         toggleable = true,
@@ -16,7 +17,7 @@ data:extend({
         small_icons = {base_sprite}
     },
     {
-        name = "toggle-grid-enforcer",
+        name = common.ids.toggle_grid_enforcer,
         type = "custom-input",
         key_sequence = "",
         action = "lua"
