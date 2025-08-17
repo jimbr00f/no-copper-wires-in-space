@@ -12,5 +12,12 @@ data:extend({
 		order = "g-e-n-c-o-r",
 		setting_type = "runtime-global",
 		default_value = false
+	},
+	{
+		type = "bool-setting",
+		name = "grid-enforcer-remove-copper-wires-in-space",
+		order = "g-e-n-w",
+		setting_type = "runtime-global",
+		default_value = false
 	}
 })

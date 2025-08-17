@@ -13,10 +13,10 @@
 
 ---@enum quality_level
 quality_level = {
-    normal = 1 --[[@as box_corner.lt]],
-    uncommon = 2 --[[@as box_corner.rb`]],
-    epic = 3 --[[@as box_corner.rb`]],
-    legendary = 5 --[[@as box_corner.rb`]],
+    normal = 1 --[[@as quality_level.normal]],
+    uncommon = 2 --[[@as quality_level.uncommon`]],
+    epic = 3 --[[@as quality_level.epic`]],
+    legendary = 5 --[[@as quality_level.legendary`]],
 }
 
 ---@alias PoleQualityWireLengthMap table<quality_level, number>

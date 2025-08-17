@@ -1,6 +1,6 @@
+require '@types/entity'
+
 local ID_COPPER = defines.wire_connector_id.pole_copper
-local CLEAN_WIRES_ON_REMOVE = not settings.global["grid-enforcer-no-clean-on-remove"].value
-local REMOVE_WIRES_IN_SPACE = settings.global['grid-enforcer-remove-copper-wires-in-space'].value
 local DEFAULT_POLE_EVENT_FILTER = {
     {
         filter = "type",
@@ -64,7 +64,8 @@ local EVENT_HANDLER_MAPPING = {
     }
 }
 
-local function initialize_storage() 
+local function initialize_storage()
+    game.print('initializing storage')
     -- Build global state if it doesn't exist (i.e. mod update)
     
     -- Clear cleanup queue
@@ -86,8 +87,8 @@ local function initialize_storage()
     for name, proto in pairs(prototypes.get_entity_filtered(DEFAULT_POLE_EVENT_FILTER)) do
         ---@type PoleQualityWireLengthMap
         storage.wire_lengths[name] = {}
-        for quality_name in pairs(prototypes.quality) do
-            storage.wire_lengths[name][quality_name] = proto.get_max_wire_distance(quality_name)
+        for _, quality in pairs(prototypes.quality) do
+            storage.wire_lengths[name][quality.level] = proto.get_max_wire_distance(quality)
         end
         local selection_box = proto.selection_box
         storage.pole_widths[name] = math.max(
@@ -134,7 +135,9 @@ end
 ---@param pole LuaEntity
 ---@return boolean
 local function should_disconnect_for_space(pole)
-    return REMOVE_WIRES_IN_SPACE and pole.surface.platform ~= nil
+    local is_setting_enabled = settings.global['grid-enforcer-remove-copper-wires-in-space'].value
+    local is_pole_in_space = pole.surface.platform ~= nil
+    return is_setting_enabled and is_pole_in_space
 end
 
 ---@param pole LuaEntity
@@ -354,15 +357,8 @@ local function handle_pole_event(event)
     local source_pole = event.entity or event.destination
     -- New pole
     if is_creation then
-        local cleanupItem = {
-            entity = source_pole,
-            search_direction = nil,
-            is_selection = false,
-            alt_mode = false
-        }
-        local params = get_cleanup_params(source_pole, nil, false)
         cleanup_pole(source_pole)
-    elseif CLEAN_WIRES_ON_REMOVE then
+    elseif not settings.global['grid-enforcer-no-clean-on-remove'].value then
         local connector = source_pole.get_wire_connector(ID_COPPER, false)
         if not connector then
             return
@@ -390,14 +386,13 @@ function print_debugs()
     local proto = protos[name]
     local selection_box = proto.selection_box
     local calc = math.max(
-    (math.abs(selection_box.left_top.x) + math.abs(selection_box.right_bottom.x)) / 2,
-    (math.abs(selection_box.left_top.y) + math.abs(selection_box.right_bottom.y)) / 2
-) + 0.05
-storage.wire_lengths[name] = {}
-for quality_name in pairs(prototypes.quality) do
-    storage.wire_lengths[name][quality_name] = proto.get_max_wire_distance(quality_name)
-end
---   end
+        (math.abs(selection_box.left_top.x) + math.abs(selection_box.right_bottom.x)) / 2,
+        (math.abs(selection_box.left_top.y) + math.abs(selection_box.right_bottom.y)) / 2
+    ) + 0.05
+    storage.wire_lengths[name] = {}
+    for quality_name in pairs(prototypes.quality) do
+        storage.wire_lengths[name][quality_name] = proto.get_max_wire_distance(quality_name)
+    end
 end
 
 ---@param event EventData.on_player_selected_area | EventData.on_player_alt_selected_area
