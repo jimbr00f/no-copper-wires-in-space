@@ -1,164 +1,158 @@
 local ID_COPPER = defines.wire_connector_id.pole_copper
-
----@class QueueItem
----@field entity LuaEntity
----@field is_selection boolean
----@field alt_mode boolean
----@field direction defines.direction?
-
----@class WireLength
----@field pole_quality number
-
-
-storage.enforcer = {}
-
----@type table<string, WireLength>
-storage.enforcer.wire_lengths = {
-  --pole_name = { pole_quality = pole_connect_distance }
+local CLEAN_WIRES_ON_REMOVE = not settings.global["grid-enforcer-no-clean-on-remove"].value
+local REMOVE_WIRES_IN_SPACE = settings.global['grid-enforcer-remove-copper-wires-in-space'].value
+local DEFAULT_POLE_EVENT_FILTER = {
+    {
+        filter = "type",
+        type = "electric-pole"
+    }
 }
 
----@type table<string, number>
-storage.enforcer.pole_widths = {
-  --pole_name = pole_width
-}
-
----@type table<uint64, QueueItem>
-storage.enforcer.cleanup_queue = {}
-
----@type table<string, boolean>
-storage.enforcer.disabled_forces = {}
-
-local event_filter = {
-  {
-    filter = "type",
-    type = "electric-pole"
-  }--[[,-- Nope :(
-  {
-    filter = "ghost_type",
-    type = "electric-pole",
-    mode = "or"
-  }]]
+---@type SearchQueue
+local DEFAULT_SEARCH_QUEUE = {
+    -- which part of area to modify, which subkey, what multiplier
+    [defines.direction.north] = {
+        axis = box_corner.lt,
+        key = 2,
+        multiplier = -1
+    },
+    [defines.direction.east] = {
+        axis = box_corner.rb,
+        key = 1,
+        multiplier = 1
+    },
+    [defines.direction.south] = {
+        axis = box_corner.rb,
+        key = 2,
+        multiplier = 1
+    },
+    [defines.direction.west] = {
+        axis = box_corner.lt,
+        key = 1,
+        multiplier = -1
+    }
 }
 
 -- These are (most) ways a pole can be created or removed
-
-local events = {
-  creation = {
-    on_built_entity = true,
-    on_robot_built_entity = true,
-    on_space_platform_built_entity = true,
-    script_raised_built = true,
-    script_raised_revive = true,
-    on_entity_cloned = true
-  },
-  destruction = {
-    on_player_mined_entity = true,
-    on_robot_mined_entity = true,
-    on_space_platform_mined_entity = true,
-    on_entity_died = true,
-    script_raised_destroy = true
-  },
-  input = {
-    ["toggle-grid-enforcer"] = true,
-    on_lua_shortcut = true
-  },
-  selection = {
-    on_player_selected_area = true,
-    on_player_alt_selected_area = true
-  },
-  init = {
-    on_init = true,
-    on_configuration_changed = true
-  }
+local EVENT_HANDLER_MAPPING = {
+    creation = {
+        on_built_entity = true,
+        on_robot_built_entity = true,
+        on_space_platform_built_entity = true,
+        script_raised_built = true,
+        script_raised_revive = true,
+        on_entity_cloned = true
+    },
+    destruction = {
+        on_player_mined_entity = true,
+        on_robot_mined_entity = true,
+        on_space_platform_mined_entity = true,
+        on_entity_died = true,
+        script_raised_destroy = true
+    },
+    input = {
+        ["toggle-grid-enforcer"] = true,
+        on_lua_shortcut = true
+    },
+    selection = {
+        on_player_selected_area = true,
+        on_player_alt_selected_area = true
+    },
+    init = {
+        on_init = true,
+        on_configuration_changed = true
+    }
 }
+
+local function initialize_storage() 
+    -- Build global state if it doesn't exist (i.e. mod update)
+    
+    -- Clear cleanup queue
+    ---@type PoleCleanupRequestQueue
+    storage.cleanup_request_queue = {}
+    
+    -- Import forces, add any new ones
+    ---@type table<string, boolean>
+    storage.disabled_forces = storage.disabled_forces or {}
+    for force_name, _ in pairs(game.forces) do
+        storage.disabled_forces[force_name] = storage.disabled_forces[force_name] or false
+    end
+    
+    -- On load/change we'll store the pole specs for quick reference
+    ---@type PoleWireLengthMap
+    storage.wire_lengths = storage.wire_lengths or {}
+    ---@type PoleWidthMap
+    storage.pole_widths = storage.pole_widths or {}
+    for name, proto in pairs(prototypes.get_entity_filtered(DEFAULT_POLE_EVENT_FILTER)) do
+        ---@type PoleQualityWireLengthMap
+        storage.wire_lengths[name] = {}
+        for quality_name in pairs(prototypes.quality) do
+            storage.wire_lengths[name][quality_name] = proto.get_max_wire_distance(quality_name)
+        end
+        local selection_box = proto.selection_box
+        storage.pole_widths[name] = math.max(
+        (math.abs(selection_box.left_top.x) + math.abs(selection_box.right_bottom.x)) / 2,
+        (math.abs(selection_box.left_top.y) + math.abs(selection_box.right_bottom.y)) / 2
+    ) + 0.05
+    end
+end
 
 ---@param pos1 MapPosition
 ---@param pos2 MapPosition
 ---@return number
 local function distance(pos1, pos2)
-  return ((pos1.x - pos2.x) ^ 2 + (pos1.y - pos2.y) ^ 2) ^ 0.5
+    return ((pos1.x - pos2.x) ^ 2 + (pos1.y - pos2.y) ^ 2) ^ 0.5
 end
 
 ---@param tbl LuaEntity[]
 ---@param origin MapPosition
 local function distance_sort(tbl, origin)
-  table.sort(tbl, function(e1, e2)
-    return distance(origin, e1.position) < distance(origin, e2.position)
-  end)
+    table.sort(tbl, function(e1, e2)
+        return distance(origin, e1.position) < distance(origin, e2.position)
+    end)
 end
 
+---@param origin MapPosition
+---@param pos MapPosition
+---@param widthA number
+---@param widthB number
 ---@return defines.direction?
 local function direction_of(origin, pos, widthA, widthB)
-  local width = widthA ~= widthB and math.max(widthA or 0.5, widthB or 0.5) or 1
-  local h_distance = math.abs(origin.x - pos.x)
-  local v_distance = math.abs(origin.y - pos.y)
-  if h_distance == 0 and v_distance == 0 then -- Both axes same
+    local width = widthA ~= widthB and math.max(widthA or 0.5, widthB or 0.5) or 1
+    local h_distance = math.abs(origin.x - pos.x)
+    local v_distance = math.abs(origin.y - pos.y)
+    if h_distance == 0 and v_distance == 0 then -- Both axes same
+        return nil
+    elseif h_distance < width and h_distance < v_distance then -- Y axis different, <= prefs n/s connections over e/w
+        return origin.y > pos.y and defines.direction.north or defines.direction.south
+    elseif v_distance < width and v_distance < h_distance then -- X axis different
+        return origin.x > pos.x and defines.direction.west or defines.direction.east
+    end
     return nil
-  elseif h_distance < width and h_distance < v_distance then -- Y axis different, <= prefs n/s connections over e/w
-    return origin.y > pos.y and defines.direction.north or defines.direction.south
-  elseif v_distance < width and v_distance < h_distance then -- X axis different
-    return origin.x > pos.x and defines.direction.west or defines.direction.east
-  end
-  return nil
 end
-
----@class SearchParams
----@field axis string
----@field key integer
----@field multiplier number
-
----@alias SearchQueue table<defines.direction, SearchParams>
-
----@type SearchQueue
-local default_search_queue = {
-  -- which part of area to modify, which subkey, what multiplier
-  [defines.direction.north] = {
-    axis = "left_top",
-    key = 2,
-    multiplier = -1
-  },
-  [defines.direction.east] = {
-    axis = "right_bottom",
-    key = 1,
-    multiplier = 1
-  },
-  [defines.direction.south] = {
-    axis = "right_bottom",
-    key = 2,
-    multiplier = 1
-  },
-  [defines.direction.west] = {
-    axis = "left_top",
-    key = 1,
-    multiplier = -1
-  }
-}
 
 ---@param pole LuaEntity
 ---@return boolean
 local function should_disconnect_for_space(pole)
-    local space_setting = settings.global['grid-enforcer-no-copper-wires-in-space'].value
-    if not space_setting then return false end
-    local is_space = pole.surface.platform ~= nil
-    return is_space
+    return REMOVE_WIRES_IN_SPACE and pole.surface.platform ~= nil
 end
 
 ---@param pole LuaEntity
 ---@param is_selection boolean
 ---@return boolean
 local function should_disconnect_for_force(pole, is_selection)
-    return is_selection or not storage.enforcer.disabled_forces[pole.force.name]
+    return is_selection or not storage.disabled_forces[pole.force.name]
 end
 
 ---@param params CleanupParams
 local function disconnect_search_neighbors(params)
     for _, connection in pairs(params.connector.real_connections) do
-      local neighbour_connector = connection.target
-      local neighbour = neighbour_connector.owner
-      local direction = direction_of(params.origin, neighbour.position, params.width, storage.enforcer.pole_widths[neighbour.name])
-      if direction == params.search_direction and neighbour.type == "electric-pole" then
-        params.connector.disconnect_from(neighbour_connector)
-      end
+        local neighbour_connector = connection.target
+        local neighbour = neighbour_connector.owner
+        local direction = direction_of(params.origin, neighbour.position, params.width, storage.pole_widths[neighbour.name])
+        if direction == params.search_direction and neighbour.type == "electric-pole" then
+            params.connector.disconnect_from(neighbour_connector)
+        end
     end
 end
 
@@ -166,40 +160,41 @@ end
 ---@param params CleanupParams
 ---@param search_queue SearchQueue
 local function reconnect_closest_neighbors(params, search_queue)
-  -- Begin search
-  for trace_direction, area_modifier in pairs(search_queue) do
-    -- Build our search filter -- area and type filter
-    local search_filter = {
-      area = {
-        left_top = {
-          params.origin.x - params.width,
-          params.origin.y - params.width
-        },
-        right_bottom = {
-          params.origin.x + params.width,
-          params.origin.y + params.width
+    -- Begin search
+    for trace_direction, area_modifier in pairs(search_queue) do
+        -- Build our search filter -- area and type filter
+        ---@type EntitySearchFilters
+        local search_filter = {
+            area = {
+                left_top = {
+                    params.origin.x - params.width,
+                    params.origin.y - params.width
+                },
+                right_bottom = {
+                    params.origin.x + params.width,
+                    params.origin.y + params.width
+                }
+            },
+            type = "electric-pole",
+            force = params.entity.force.name
         }
-      },
-      type = "electric-pole",
-      force = params.pole.force.name
-    }
-    -- Edit the filter area to cover our desired direction and length
-    local point = search_filter.area[area_modifier.axis]
-    point[area_modifier.key] = point[area_modifier.key] + params.length * area_modifier.multiplier
-    -- Do our "line" search and sort the result by distance
-    local results = params.pole.surface.find_entities_filtered(search_filter)
-    distance_sort(results, params.origin)
-    -- Move in the target direction until we get a successful connection
-    for _, target in pairs(results) do
-      if params.pole ~= target then
-        if trace_direction == direction_of(params.origin, target.position, params.width, storage.enforcer.pole_widths[target.name]) then
-          if params.connector.connect_to(target.get_wire_connector(ID_COPPER, true)) then
-            break
-          end
+        -- Edit the filter area to cover our desired direction and length
+        local point = search_filter.area[area_modifier.axis]
+        point[area_modifier.key] = point[area_modifier.key] + params.length * area_modifier.multiplier
+        -- Do our "line" search and sort the result by distance
+        local results = params.entity.surface.find_entities_filtered(search_filter)
+        distance_sort(results, params.origin)
+        -- Move in the target direction until we get a successful connection
+        for _, target in pairs(results) do
+            if params.entity ~= target then
+                if trace_direction == direction_of(params.origin, target.position, params.width, storage.pole_widths[target.name]) then
+                    if params.connector.connect_to(target.get_wire_connector(ID_COPPER, true)) then
+                        break
+                    end
+                end
+            end
         end
-      end
     end
-  end
 end
 
 ---@param pole LuaEntity
@@ -207,82 +202,72 @@ end
 ---@return number
 local function get_pole_width(pole, alt_mode)
     if alt_mode then
-        return storage.enforcer.wire_lengths[pole.name][pole.quality.name]
+        return storage.wire_lengths[pole.name][pole.quality.level --[[@as quality_level]]]
     else
-        return storage.enforcer.pole_widths[pole.name]
+        return storage.pole_widths[pole.name]
     end
 end
 
 ---@param params CleanupParams
 local function cleanup_obsolete_connections(params)
-  -- Take our new neighbours and disconnect them from any now-unnecessary connections
-  for _, friend_connection in pairs(params.connector.real_connections) do
-    local friend_connector = friend_connection.target
-    local friend = friend_connector.owner
-    if --[[friend.valid and]] friend.type == "electric-pole" then
-      local friend_width = get_pole_width(friend, params.alt_mode)
-      local friend_pos = friend.position
-      -- Kill diagonal connections
-      local friend_direction = direction_of(params.origin, friend_pos, params.width, friend_width)
-      if not friend_direction then
-        params.connector.disconnect_from(friend_connector)
-      end
-      -- Since we're iterating anyway, let's cache the connectors
-      local neighbour_connectors = {}
-      local sorted_neighbours = {}
-      for _, fof_connection in pairs(friend_connector.real_connections) do
-        local fof_connector = fof_connection.target
-        local owner = fof_connector.owner
-        if --[[owner.valid and]] owner.type == "electric-pole" then
-          sorted_neighbours[#sorted_neighbours+1] = owner
-          neighbour_connectors[owner.unit_number] = fof_connector
+    -- Take our new neighbours and disconnect them from any now-unnecessary connections
+    for _, friend_connection in pairs(params.connector.real_connections) do
+        local friend_connector = friend_connection.target
+        local friend = friend_connector.owner
+        if --[[friend.valid and]] friend.type == "electric-pole" then
+            local friend_width = get_pole_width(friend, params.alt_mode)
+            local friend_pos = friend.position
+            -- Kill diagonal connections
+            local friend_direction = direction_of(params.origin, friend_pos, params.width, friend_width)
+            if not friend_direction then
+                params.connector.disconnect_from(friend_connector)
+            end
+            -- Since we're iterating anyway, let's cache the connectors
+            local neighbour_connectors = {}
+            local sorted_neighbours = {}
+            for _, fof_connection in pairs(friend_connector.real_connections) do
+                local fof_connector = fof_connection.target
+                local owner = fof_connector.owner
+                if --[[owner.valid and]] owner.type == "electric-pole" then
+                    sorted_neighbours[#sorted_neighbours+1] = owner
+                    neighbour_connectors[owner.unit_number] = fof_connector
+                end
+            end
+            -- Sort so we can iterate in order
+            distance_sort(sorted_neighbours, friend_pos)
+            -- kill any but the closest in each direction
+            local found_friends = {
+                [defines.direction.north] = false,
+                [defines.direction.east] = false,
+                [defines.direction.south] = false,
+                [defines.direction.west] = false
+            }
+            for _, friend_of_friend in pairs(sorted_neighbours) do
+                local fof_direction = direction_of(friend_pos, friend_of_friend.position, friend_width, storage.pole_widths[friend_of_friend.name])
+                if not fof_direction or found_friends[fof_direction] then
+                    friend_connector.disconnect_from(neighbour_connectors[friend_of_friend.unit_number])
+                else -- This is our closest connection in the given direction
+                    found_friends[fof_direction] = friend_of_friend
+                end
+            end
         end
-      end
-      -- Sort so we can iterate in order
-      distance_sort(sorted_neighbours, friend_pos)
-      -- kill any but the closest in each direction
-      local found_friends = {
-        [defines.direction.north] = false,
-        [defines.direction.east] = false,
-        [defines.direction.south] = false,
-        [defines.direction.west] = false
-      }
-      for _, friend_of_friend in pairs(sorted_neighbours) do
-          local fof_direction = direction_of(friend_pos, friend_of_friend.position, friend_width, storage.enforcer.pole_widths[friend_of_friend.name])
-          if not fof_direction or found_friends[fof_direction] then
-            friend_connector.disconnect_from(neighbour_connectors[friend_of_friend.unit_number])
-          else -- This is our closest connection in the given direction
-            found_friends[fof_direction] = friend_of_friend
-          end
-      end
     end
-  end
 end
-
-
----@class CleanupParams
----@field pole LuaEntity
----@field connector LuaWireConnector
----@field search_direction? defines.direction
----@field alt_mode boolean
----@field origin MapPosition
----@field length WireLength
----@field width number
 
 ---@param pole LuaEntity
 ---@param search_direction defines.direction?
----@param alt_mode boolean
+---@param alt_mode boolean?
 ---@return CleanupParams?
 function get_cleanup_params(pole, search_direction, alt_mode)
-    local length = storage.enforcer.wire_lengths[pole.name][pole.quality.name]
-    local width = storage.enforcer.pole_widths[pole.name]
+    local length = storage.wire_lengths[pole.name][pole.quality.level --[[@as quality_level]]]
+    local width = storage.pole_widths[pole.name]
     if alt_mode then width = length end
     ---@type CleanupParams
     local params = {
-        pole = pole,
+        entity = pole,
         connector = pole.get_wire_connector(ID_COPPER, true),
         search_direction = search_direction,
-        alt_mode = alt_mode,
+        alt_mode = alt_mode or false,
         origin = pole.position,
         length = length,
         width = width 
@@ -296,60 +281,59 @@ end
 ---@param is_selection? boolean
 ---@param alt_mode? boolean
 local function cleanup_pole(pole, search_direction, is_selection, alt_mode)
-  -- wtf factorio
-  if pole.type ~= "electric-pole" then
-    return
-  end
-  
-  if not alt_mode then alt_mode = false end
-
-  local params = get_cleanup_params(pole, search_direction, alt_mode)
-  if not params then
-    log(string.format("pole %s has no connector?", pole))
-    return
-  end
-
-  if not should_disconnect_for_force(pole, is_selection or false) then
-    return
-  end
-
-  local disconnect_space = should_disconnect_for_space(pole)
-  if disconnect_space or not search_direction then
-    params.connector.disconnect_all()
-  else
-    disconnect_search_neighbors(params)
-  end
-  if disconnect_space then
-    return
-  end
+    if pole.type ~= "electric-pole" then
+        return
+    end
+    
+    if not alt_mode then alt_mode = false end
+    
+    local params = get_cleanup_params(pole, search_direction, alt_mode)
+    if not params then
+        log(string.format("pole %s has no connector?", pole))
+        return
+    end
+    
+    if not should_disconnect_for_force(pole, is_selection or false) then
+        return
+    end
+    
+    local disconnect_space = should_disconnect_for_space(pole)
+    if disconnect_space or not search_direction then
+        params.connector.disconnect_all()
+    else
+        disconnect_search_neighbors(params)
+    end
+    if disconnect_space then
+        return
+    end
     ---@type SearchQueue
-  local search_queue = default_search_queue
-  if search_direction then search_queue = {[search_direction] = default_search_queue[search_direction]} end
-  reconnect_closest_neighbors(params, search_queue)
-  cleanup_obsolete_connections(params)
+    local search_queue = DEFAULT_SEARCH_QUEUE
+    if search_direction then search_queue = {[search_direction] = DEFAULT_SEARCH_QUEUE[search_direction]} end
+    reconnect_closest_neighbors(params, search_queue)
+    cleanup_obsolete_connections(params)
 end
 
 local queue_size = 3
 script.on_nth_tick(3, function()
-  local max_iter = 0
-  local key, details = next(storage.enforcer.cleanup_queue)
-  -- Empty table. We make this distinction because we want to replace the empty table with {} only when we modify it (instead of every tick)
-  if not key or not details then
-    return
-  end
-  repeat
-    if details.entity.valid then
-      cleanup_pole(details.entity, details.direction, details.is_selection, details.alt_mode)
-      max_iter = max_iter + 1
+    local max_iter = 0
+    local key, details = next(storage.cleanup_request_queue)
+    -- Empty table. We make this distinction because we want to replace the empty table with {} only when we modify it (instead of every tick)
+    if not key or not details then
+        return
     end
-    storage.enforcer.cleanup_queue[key] = nil
-    key, details = next(storage.enforcer.cleanup_queue)
-    -- optimize for gc times
-    if not key then
-      storage.enforcer.cleanup_queue = {}
-      break
-    end
-  until max_iter > queue_size
+    repeat
+        if details.entity.valid then
+            cleanup_pole(details.entity, details.search_direction, details.is_selection, details.alt_mode)
+            max_iter = max_iter + 1
+        end
+        storage.cleanup_request_queue[key] = nil
+        key, details = next(storage.cleanup_request_queue)
+        -- optimize for gc times
+        if not key then
+            storage.cleanup_request_queue = {}
+            break
+        end
+    until max_iter > queue_size
 end)
 
 
@@ -366,132 +350,112 @@ end)
 ---| EventData.on_entity_died
 ---| EventData.script_raised_destroy
 local function handle_pole_event(event)
- print_debugs()
-  local is_creation = events.creation[event.name]
-  -- Different events use different names for.. reasons?
-  local source_pole = event.entity or event.destination
-  -- New pole
-  if is_creation then
-    cleanup_pole(source_pole)
-  elseif not settings.global["grid-enforcer-no-clean-on-remove"].value then -- Handling reconnection logic on pole removal
-    local connector = source_pole.get_wire_connector(ID_COPPER, false)
-    if not connector then
-      return
-    end
-    local widths = storage.enforcer.pole_widths
-    for _, friend_connector in pairs(connector.real_connections) do
-      local friend = friend_connector.target.owner
-      local friend_direction = direction_of(friend.position, source_pole.position, widths[friend.name], widths[friend.name])
-      if friend_direction and friend.type == "electric-pole" then
-        storage.enforcer.cleanup_queue[friend.unit_number] = {
-          entity = friend,
-          direction = friend_direction
+    local is_creation = EVENT_HANDLER_MAPPING.creation[event.name]
+    local source_pole = event.entity or event.destination
+    -- New pole
+    if is_creation then
+        local cleanupItem = {
+            entity = source_pole,
+            search_direction = nil,
+            is_selection = false,
+            alt_mode = false
         }
-      end
+        local params = get_cleanup_params(source_pole, nil, false)
+        cleanup_pole(source_pole)
+    elseif CLEAN_WIRES_ON_REMOVE then
+        local connector = source_pole.get_wire_connector(ID_COPPER, false)
+        if not connector then
+            return
+        end
+        local widths = storage.pole_widths
+        for _, friend_connector in pairs(connector.real_connections) do
+            local friend = friend_connector.target.owner
+            local friend_direction = direction_of(friend.position, source_pole.position, widths[friend.name], widths[friend.name])
+            if friend_direction and friend.type == "electric-pole" then
+                storage.cleanup_request_queue[friend.unit_number] = {
+                    entity = friend,
+                    search_direction = friend_direction,
+                    is_selection = false,
+                    alt_mode = false
+                }
+            end
+        end
     end
-  end
 end
 
 function print_debugs()
---   for name, proto in pairs(prototypes.get_entity_filtered(event_filter)) do
-local name = 'substation'
-local protos = prototypes.get_entity_filtered(event_filter)
-local proto = protos[name]
-        local selection_box = proto.selection_box
-        local calc = math.max(
-      (math.abs(selection_box.left_top.x) + math.abs(selection_box.right_bottom.x)) / 2,
-      (math.abs(selection_box.left_top.y) + math.abs(selection_box.right_bottom.y)) / 2
-    ) + 0.05
-    storage.enforcer.wire_lengths[name] = {}
-    for quality_name in pairs(prototypes.quality) do
-      storage.enforcer.wire_lengths[name][quality_name] = proto.get_max_wire_distance(quality_name)
-    end
+    --   for name, proto in pairs(prototypes.get_entity_filtered(DEFAULT_POLE_EVENT_FILTER)) do
+    local name = 'substation'
+    local protos = prototypes.get_entity_filtered(DEFAULT_POLE_EVENT_FILTER)
+    local proto = protos[name]
+    local selection_box = proto.selection_box
+    local calc = math.max(
+    (math.abs(selection_box.left_top.x) + math.abs(selection_box.right_bottom.x)) / 2,
+    (math.abs(selection_box.left_top.y) + math.abs(selection_box.right_bottom.y)) / 2
+) + 0.05
+storage.wire_lengths[name] = {}
+for quality_name in pairs(prototypes.quality) do
+    storage.wire_lengths[name][quality_name] = proto.get_max_wire_distance(quality_name)
+end
 --   end
 end
 
 ---@param event EventData.on_player_selected_area | EventData.on_player_alt_selected_area
 local function handle_selection_event(event)
-  if event.item ~= "invoke-grid-enforcer" then
-    return
-  end
-  local alt_mode = event.name == defines.events["on_player_alt_selected_area"]
-  for _, ent in pairs(event.entities) do
-    storage.enforcer.cleanup_queue[ent.unit_number] = {
-      entity = ent,
-      is_selection = true,
-      alt_mode = alt_mode
-    }
-  end
+    if event.item ~= "invoke-grid-enforcer" then
+        return
+    end
+    local alt_mode = event.name == 'on_player_alt_selected_area'
+    for _, ent in pairs(event.entities) do
+        storage.cleanup_request_queue[ent.unit_number] = {
+            entity = ent,
+            is_selection = true,
+            alt_mode = alt_mode
+        }
+    end
 end
 
 local function toggle_shortcut_for_force(event)
-  if not events.input[event.prototype_name or event.input_name or ""] then
-    return
-  end
-  local event_player = event.player_index and game.players[event.player_index]
-  local event_force = event_player and event_player.force
-  local enabled = storage.enforcer.disabled_forces[event_force.name] and true or false
-  for _, force_player in pairs(event_force.players) do
-    force_player.set_shortcut_toggled("toggle-grid-enforcer", enabled)      
-  end
-  storage.enforcer.disabled_forces[event_force.name] = not enabled
-end
-
-local function re_init(event)
-  log("re_init")
-  -- Build global state if it doesn't exist (i.e. mod update)
-  storage.enforcer = storage.enforcer or {}
-  -- Clear cleanup queue
-  storage.enforcer.cleanup_queue = {}
-  -- Import forces, add any new ones
-  storage.enforcer.disabled_forces = storage.enforcer.disabled_forces or {}
-  for force_name in pairs(game.forces) do
-    storage.enforcer.disabled_forces[force_name] = storage.enforcer.disabled_forces[force_name] or false
-  end
-  -- On load/change we'll store the pole specs for quick reference
-  storage.enforcer.wire_lengths = {}
-  storage.enforcer.pole_widths = {}
-  for name, proto in pairs(prototypes.get_entity_filtered(event_filter)) do
-    storage.enforcer.wire_lengths[name] = {}
-    for quality_name in pairs(prototypes.quality) do
-      storage.enforcer.wire_lengths[name][quality_name] = proto.get_max_wire_distance(quality_name)
+    if not EVENT_HANDLER_MAPPING.input[event.prototype_name or event.input_name or ""] then
+        return
     end
-    local selection_box = proto.selection_box
-    storage.enforcer.pole_widths[name] = math.max(
-      (math.abs(selection_box.left_top.x) + math.abs(selection_box.right_bottom.x)) / 2,
-      (math.abs(selection_box.left_top.y) + math.abs(selection_box.right_bottom.y)) / 2
-    ) + 0.05
-  end
+    local event_player = event.player_index and game.players[event.player_index]
+    local event_force = event_player and event_player.force
+    local enabled = storage.disabled_forces[event_force.name] and true or false
+    for _, force_player in pairs(event_force.players) do
+        force_player.set_shortcut_toggled("toggle-grid-enforcer", enabled)      
+    end
+    storage.disabled_forces[event_force.name] = not enabled
 end
 
 local function register_event(event_name, event_func, should_filter)
-  -- Strange but whatever
-  local event_id = defines.events[event_name] or event_name
-  script.on_event(event_id, event_func)
-  if should_filter then
-    script.set_event_filter(event_id, event_filter)
-  end
+    -- Strange but whatever
+    local event_id = defines.events[event_name] or event_name
+    script.on_event(event_id, event_func)
+    if should_filter then
+        script.set_event_filter(event_id, DEFAULT_POLE_EVENT_FILTER)
+    end
 end
 
-for event_name in pairs(events.creation) do
-  -- Because we pass event_id.. sometimes
-  events.creation[defines.events[event_name]] = true
-  register_event(event_name, handle_pole_event, true)
+for event_name, _ in pairs(EVENT_HANDLER_MAPPING.creation) do
+    -- Because we pass event_id.. sometimes
+    EVENT_HANDLER_MAPPING.creation[defines.events[event_name]] = true
+    register_event(event_name, handle_pole_event, true)
 end
-for event_name in pairs(events.destruction) do
-  register_event(event_name, handle_pole_event, true)
+for event_name in pairs(EVENT_HANDLER_MAPPING.destruction) do
+    register_event(event_name, handle_pole_event, true)
 end
-for event_name in pairs(events.input) do
-  register_event(event_name, toggle_shortcut_for_force)
+for event_name in pairs(EVENT_HANDLER_MAPPING.input) do
+    register_event(event_name, toggle_shortcut_for_force)
 end
-for event_name in pairs(events.selection) do
-  register_event(event_name, handle_selection_event)
+for event_name in pairs(EVENT_HANDLER_MAPPING.selection) do
+    register_event(event_name, handle_selection_event)
 end
-for event_name in pairs(events.init) do
-  script[event_name](re_init)
+for event_name in pairs(EVENT_HANDLER_MAPPING.init) do
+    script[event_name](initialize_storage)
 end
 
 register_event("on_player_created", function(event)
-  local player = game.players[event.player_index]
-  player.set_shortcut_toggled("toggle-grid-enforcer", not storage.enforcer.disabled_forces[player.force.name])
+    local player = game.players[event.player_index]
+    player.set_shortcut_toggled("toggle-grid-enforcer", not storage.disabled_forces[player.force.name])
 end)
