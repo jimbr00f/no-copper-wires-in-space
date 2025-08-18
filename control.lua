@@ -135,7 +135,7 @@ end
 ---@param pole LuaEntity
 ---@return boolean
 local function should_disconnect_for_space(pole)
-    local is_setting_enabled = settings.global['grid-enforcer-remove-copper-wires-in-space'].value
+    local is_setting_enabled = settings.global[common.ids.no_wires_in_space].value
     local is_pole_in_space = pole.surface.platform ~= nil
     return is_setting_enabled and is_pole_in_space
 end
@@ -381,10 +381,10 @@ end
 
 ---@param event EventData.on_player_selected_area | EventData.on_player_alt_selected_area
 local function handle_selection_event(event)
-    if event.item ~= "invoke-grid-enforcer" then
+    if event.item ~= common.ids.invoke_grid_enforcer then
         return
     end
-    local alt_mode = event.name == 'on_player_alt_selected_area'
+    local alt_mode = event.name == defines.events.on_player_alt_selected_area
     for _, ent in pairs(event.entities) do
         storage.cleanup_request_queue[ent.unit_number] = {
             entity = ent,

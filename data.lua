@@ -6,7 +6,7 @@ local base_sprite = {
     tint = {r = 0, g = 0, b = 0, a = 1}
 }
 
-data:extend({
+local toggle_prototypes = {
     {
         name = common.ids.toggle_grid_enforcer,
         associated_control_input = common.ids.toggle_grid_enforcer,
@@ -22,43 +22,39 @@ data:extend({
         key_sequence = "",
         action = "lua"
     }
-})
+}
 
-if settings.startup["grid-enforcer-enable-planner"].value == false then
-    return
-end
-
-data:extend({
+local planner_prototypes = {
     {
-        name = "invoke-grid-enforcer",
-        associated_control_input = "invoke-grid-enforcer",
+        name = common.ids.invoke_grid_enforcer,
+        associated_control_input = common.ids.invoke_grid_enforcer,
         type = "shortcut",
         action = "spawn-item",
-        item_to_spawn = "invoke-grid-enforcer",
+        item_to_spawn = common.ids.invoke_grid_enforcer,
         style = "default",
         icons = {{
-            icon = "__noangledcables__/graphics/invoke-grid-enforcer.png",
+            icon = common.png(common.ids.invoke_grid_enforcer),
             icon_size = 32,
             tint = {29, 28, 29}
         }},
         small_icons = {{
-            icon = "__noangledcables__/graphics/invoke-grid-enforcer-x24.png",
+            icon = common.png(common.ids.invoke_grid_enforcer .. '-x24'),
             icon_size = 24,
             tint = {29, 28, 29}
         }}
     },
     {
-        name = "invoke-grid-enforcer",
+        name = common.ids.invoke_grid_enforcer,
         type = "custom-input",
         key_sequence = "",
         action = "spawn-item",
-        item_to_spawn = "invoke-grid-enforcer"
+        item_to_spawn = common.ids.invoke_grid_enforcer
     },
     {
-        name = "invoke-grid-enforcer",
+        name = common.ids.invoke_grid_enforcer,
         type = "selection-tool",
         icons = {{
-            icon = "__noangledcables__/graphics/invoke-grid-enforcer.png",
+            icon = common.png(common.ids.invoke_grid_enforcer),
             icon_size = 32,
             tint = {0.98, 0.66, 0.22}
         }},
@@ -78,4 +74,10 @@ data:extend({
             entity_type_filters = {"electric-pole"}
         }
     }
-})
+}
+
+
+data:extend(toggle_prototypes)
+if settings.startup[common.ids.enable_planner].value then
+    data:extend(planner_prototypes)
+end
